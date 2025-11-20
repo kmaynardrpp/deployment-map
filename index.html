@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Globe Sites</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div id="globe"></div>
+
+  <aside id="sidebar">
+    <div class="sidebar-header">
+      <div class="app-title">Globe Sites</div>
+      <div class="selected">
+        <span class="label">Selected:</span>
+        <span id="selected-site">none</span>
+      </div>
+      <div class="hint">Drag to rotate. Scroll to zoom. Click a pin or a site in the list.</div>
+    </div>
+    <div class="sidebar-search">
+      <input id="site-search" type="search" placeholder="Search by ID or company..." autocomplete="off" />
+    </div>
+    <div class="sidebar-list" id="site-list"></div>
+  </aside>
+
+  <div id="site-popup" class="popup hidden" role="dialog" aria-modal="false">
+    <div class="popup-header">
+      <div>
+        <div class="popup-id"></div>
+        <div class="popup-company"></div>
+      </div>
+      <button id="popup-close" class="popup-close" aria-label="Close details">&times;</button>
+    </div>
+    <div class="popup-body">
+      <div class="popup-location"></div>
+      <a class="popup-link" href="#" target="_blank" rel="noopener noreferrer"></a>
+    </div>
+  </div>
+
+  <!-- Globe.GL from CDN -->
+  <script src="https://unpkg.com/globe.gl"></script>
+  <script>
+    (function () {
+      'use strict';
+
+      async function loadPinsFromCsv(url) {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error('Failed to load pins CSV');
+        const text = await res.text();
+        const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+        if (!lines.length) return [];
+
+        const headers = lines[0].split(',').map(h => h.trim());
+        const idIdx = headers.indexOf('id');
+        const latIdx = headers.indexOf('lat');
+        const lngIdx = headers.indexOf('lng');
+
+        return lines.slice(1).map(line => {
+          const cols = line.split(',');
+          const id = cols[idIdx] ? cols[idIdx].trim() : '';
+          const lat = parseFloat(cols[latIdx]);
+          const lng = parseFloat(cols[lngIdx]);
+          return { id, lat, lng };
+        }).filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+      }
+
+      function deriveCompany(id) {
+        if (!id || !/^[A-Za-z0-9]+$/.test(id)) return null;
+        if (id === 'GSP1' || id === 'CHS1') {
+          return 'Walmart';
+        }
+        return 'Amazon';
+      }
+
+      function deriveUrl(id) {
+        const company = deriveCompany(id);
+        if (company === 'Amazon') {
+          const slug = id.toLowerCase();
+          return 'https://amazon' + slug + '.iwarehouseknows-rtls.com/';
+        }
+        if (company === 'Walmart') {
+          if (id === 'GSP1' || id === 'CHS1') {
+            return 'https://walmart' + id + '.rpplabs.com';
+          }
+        }
+        return null;
+      }
+
+      function initSidebar(sites, onSelect) {
+        const listEl = document.getElementById('site-list');
+        const searchEl = document.getElementById('site-search');
+        const selectedEl = document.getElementById('selected-site');
+
+        let current = null;
+
+        function syncActiveState() {
+          const buttons = listEl.querySelectorAll('.site-item');
+          buttons.forEach(btn => {
+            btn.classList.toggle('active', current && btn.dataset.id === current.id);
+          });
+        }
+
+        function setCurrent(site) {
+          current = site;
+          selectedEl.textContent = site ? (site.id || 'none') : 'none';
+          syncActiveState();
+        }
+
+        function renderList(filterText) {
+          const q = (filterText || '').trim().toLowerCase();
+          const filtered = sites
+            .slice()
+            .filter(site => {
+              if (!q) return true;
+              const id = (site.id || '').toString().toLowerCase();
+              const company = (site.company || '').toLowerCase();
+              return id.includes(q) || company.includes(q);
+            })
+            .sort((a, b) => (a.id || '').localeCompare(b.id || ''));
+
+          listEl.innerHTML = '';
+          filtered.forEach(site => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'site-item';
+            btn.dataset.id = site.id || '';
+            btn.innerHTML =
+              '<span class="site-id">' + (site.id || '—') + '</span>' +
+              (site.company ? '<span class="site-company">' + site.company + '</span>' : '');
+            btn.addEventListener('click', () => {
+              setCurrent(site);
+              onSelect(site);
+            });
+            listEl.appendChild(btn);
+          });
+          syncActiveState();
+        }
+
+        searchEl.addEventListener('input', e => {
+          renderList(e.target.value);
+        });
+
+        renderList('');
+
+        return { setCurrent };
+      }
+
+      function initPopup() {
+        const popupEl = document.getElementById('site-popup');
+        const popupIdEl = popupEl.querySelector('.popup-id');
+        const popupCompanyEl = popupEl.querySelector('.popup-company');
+        const popupLocationEl = popupEl.querySelector('.popup-location');
+        const popupLinkEl = popupEl.querySelector('.popup-link');
+        const closeBtn = document.getElementById('popup-close');
+
+        function open(site) {
+          if (!site) return;
+          popupIdEl.textContent = site.id || 'Unknown site';
+          popupCompanyEl.textContent = site.company ? site.company : 'Company not specified';
+          popupLocationEl.textContent =
+            (Number.isFinite(site.lat) && Number.isFinite(site.lng))
+              ? ('Lat ' + site.lat.toFixed(3) + ', Lng ' + site.lng.toFixed(3))
+              : '';
+
+          if (site.url) {
+            popupLinkEl.href = site.url;
+            popupLinkEl.textContent = 'Open ' + (site.company || 'site') + ' dashboard';
+            popupLinkEl.style.display = '';
+          } else {
+            popupLinkEl.removeAttribute('href');
+            popupLinkEl.style.display = 'none';
+          }
+
+          popupEl.classList.remove('hidden');
+        }
+
+        function close() {
+          popupEl.classList.add('hidden');
+        }
+
+        closeBtn.addEventListener('click', close);
+        document.addEventListener('keydown', evt => {
+          if (evt.key === 'Escape') {
+            close();
+          }
+        });
+
+        return { open, close };
+      }
+
+      async function main() {
+        const rawPins = await loadPinsFromCsv('./pins.csv');
+        const sites = rawPins.map(pin => {
+          const company = deriveCompany(pin.id);
+          const url = deriveUrl(pin.id);
+          return Object.assign({}, pin, { company, url });
+        });
+
+        const popup = initPopup();
+        let sidebar;
+        let world;
+
+        function handleSelect(site) {
+          if (!site) return;
+          if (sidebar) {
+            sidebar.setCurrent(site);
+          }
+          if (popup) {
+            popup.open(site);
+          }
+          if (world) {
+            world.pointOfView({ lat: site.lat, lng: site.lng, altitude: 1.4 }, 1000);
+          }
+        }
+
+        sidebar = initSidebar(sites, handleSelect);
+
+        world = Globe()(document.getElementById('globe'))
+          .globeImageUrl('https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg')
+          .bumpImageUrl('https://unpkg.com/three-globe/example/img/earth-topology.png')
+          .pointsData(sites)
+          .pointLat('lat')
+          .pointLng('lng')
+          .pointAltitude(0.008)
+          .pointColor(site => {
+            if (site.company === 'Walmart') return '#4da8ff';
+            if (site.company === 'Amazon') return '#ff6b6b';
+            return '#cccccc';
+          })
+          .pointLabel(site => {
+            const id = (site.id || '').toString().slice(0, 6);
+            const company = site.company || 'Site';
+            return '<div><strong>' + id +
+              '</strong><br/>' + company + '<br/><small>Click for details</small></div>';
+          });
+
+        const baseRadius = 0.16;
+        world.pointRadius(baseRadius);
+
+        world.pointOfView({ lat: 20, lng: -20, altitude: 2.2 });
+
+        const controls = world.controls();
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.rotateSpeed = 0.4;
+        controls.zoomSpeed = 0.65;
+        controls.autoRotate = false;
+
+        const camera = world.camera();
+        const baseDistance = camera.position.length();
+
+        function updatePointSize() {
+          const distance = camera.position.length();
+          const scale = Math.max(0.35, Math.min(1.4, distance / baseDistance));
+          world.pointRadius(baseRadius * scale);
+        }
+        controls.addEventListener('change', updatePointSize);
+        updatePointSize();
+
+        world.onPointClick(handleSelect);
+
+        function onResize() {
+          const el = document.getElementById('globe');
+          world.width(el.clientWidth);
+          world.height(el.clientHeight);
+        }
+        window.addEventListener('resize', onResize);
+        onResize();
+      }
+
+      main().catch(err => {
+        console.error('Failed to initialise globe:', err);
+      });
+    })();
+  </script>
+</body>
+</html>
