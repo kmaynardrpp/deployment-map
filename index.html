@@ -48,43 +48,49 @@
         const res = await fetch(url);
         if (!res.ok) throw new Error('Failed to load pins CSV');
         const text = await res.text();
-        const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+        const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length);
         if (!lines.length) return [];
 
-        const headers = lines[0].split(',').map(h => h.trim());
-        const idIdx = headers.indexOf('id');
-        const latIdx = headers.indexOf('lat');
-        const lngIdx = headers.indexOf('lng');
+        const headerCells = lines[0].split(',').map(h => h.trim().toLowerCase());
+        const idx = name => headerCells.indexOf(name.toLowerCase());
+        const idIdx = idx('id');
+        const latIdx = idx('lat');
+        const lngIdx = idx('lng');
+        const urlIdx = idx('url');
 
         return lines.slice(1).map(line => {
           const cols = line.split(',');
-          const id = cols[idIdx] ? cols[idIdx].trim() : '';
-          const lat = parseFloat(cols[latIdx]);
-          const lng = parseFloat(cols[lngIdx]);
-          return { id, lat, lng };
-        }).filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+          const id = idIdx >= 0 && cols[idIdx] ? cols[idIdx].trim() : '';
+          const lat = latIdx >= 0 && cols[latIdx] ? parseFloat(cols[latIdx]) : NaN;
+          const lng = lngIdx >= 0 && cols[lngIdx] ? parseFloat(cols[lngIdx]) : NaN;
+          const url = urlIdx >= 0 && cols[urlIdx] ? cols[urlIdx].trim() : '';
+          return { id, lat, lng, url };
+        }).filter(p => p.id && Number.isFinite(p.lat) && Number.isFinite(p.lng));
       }
 
       function deriveCompany(id) {
-        if (!id || !/^[A-Za-z0-9]+$/.test(id)) return null;
+        if (!id) return null;
         if (id === 'GSP1' || id === 'CHS1') {
           return 'Walmart';
         }
-        return 'Amazon';
-      }
-
-      function deriveUrl(id) {
-        const company = deriveCompany(id);
-        if (company === 'Amazon') {
-          const slug = id.toLowerCase();
-          return 'https://amazon' + slug + '.iwarehouseknows-rtls.com/';
-        }
-        if (company === 'Walmart') {
-          if (id === 'GSP1' || id === 'CHS1') {
-            return 'https://walmart' + id + '.rpplabs.com';
-          }
+        if (/^[A-Z]{2,4}\d{1,2}$/.test(id)) {
+          return 'Amazon';
         }
         return null;
+      }
+
+      function deriveUrlFromId(id) {
+        if (!id) return '';
+        if (id === 'GSP1') {
+          return 'https://walmartGSP1.rpplabs.com';
+        }
+        if (id === 'CHS1') {
+          return 'https://walmartCHS1.rpplabs.com';
+        }
+        if (/^[A-Z]{2,4}\d{1,2}$/.test(id)) {
+          return 'https://amazon' + id.toLowerCase() + '.iwarehouseknows-rtls.com/';
+        }
+        return '';
       }
 
       function initSidebar(sites, onSelect) {
@@ -193,7 +199,10 @@
         const rawPins = await loadPinsFromCsv('./pins.csv');
         const sites = rawPins.map(pin => {
           const company = deriveCompany(pin.id);
-          const url = deriveUrl(pin.id);
+          let url = (pin.url || '').trim();
+          if (!url) {
+            url = deriveUrlFromId(pin.id);
+          }
           return Object.assign({}, pin, { company, url });
         });
 
@@ -210,23 +219,24 @@
             popup.open(site);
           }
           if (world) {
-            world.pointOfView({ lat: site.lat, lng: site.lng, altitude: 1.4 }, 1000);
+            world.pointOfView({ lat: site.lat, lng: site.lng, altitude: 1.4 }, 900);
           }
         }
 
         sidebar = initSidebar(sites, handleSelect);
 
-        world = Globe()(document.getElementById('globe'))
+        const globeEl = document.getElementById('globe');
+        world = Globe()(globeEl)
           .globeImageUrl('https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg')
           .bumpImageUrl('https://unpkg.com/three-globe/example/img/earth-topology.png')
           .pointsData(sites)
           .pointLat('lat')
           .pointLng('lng')
-          .pointAltitude(0.008)
+          .pointAltitude(0.01)
           .pointColor(site => {
-            if (site.company === 'Walmart') return '#4da8ff';
-            if (site.company === 'Amazon') return '#ff6b6b';
-            return '#cccccc';
+            if (site.company === 'Walmart') return '#4da8ff';   // blue
+            if (site.company === 'Amazon') return '#ff6b6b';    // red
+            return '#fbbf24';                                   // amber, not white
           })
           .pointLabel(site => {
             const id = (site.id || '').toString().slice(0, 6);
@@ -235,9 +245,12 @@
               '</strong><br/>' + company + '<br/><small>Click for details</small></div>';
           });
 
-        const baseRadius = 0.16;
+        // Make pins larger and easy to click when zoomed out,
+        // but still shrink somewhat as you zoom in.
+        const baseRadius = 0.22;
         world.pointRadius(baseRadius);
 
+        // Initial POV
         world.pointOfView({ lat: 20, lng: -20, altitude: 2.2 });
 
         const controls = world.controls();
@@ -252,7 +265,7 @@
 
         function updatePointSize() {
           const distance = camera.position.length();
-          const scale = Math.max(0.35, Math.min(1.4, distance / baseDistance));
+          const scale = Math.min(2.4, Math.max(0.7, distance / baseDistance));
           world.pointRadius(baseRadius * scale);
         }
         controls.addEventListener('change', updatePointSize);
